@@ -25,6 +25,7 @@ const loadingState = document.getElementById("loadingState");
 const clearAllBtn = document.getElementById("clearAllBtn");
 const sendAllBtn = document.getElementById("sendAllBtn");
 const autoSendToggle = document.getElementById("autoSendToggle");
+const autoDownloadToggle = document.getElementById("autoDownloadToggle");
 const notificationsToggle = document.getElementById("notificationsToggle");
 const serverUrlInput = document.getElementById("serverUrlInput");
 const testConnectionBtn = document.getElementById("testConnectionBtn");
@@ -52,11 +53,13 @@ async function loadSettings() {
     const result = await browserAPI.storage.local.get(["settings"]);
     settings = result.settings || {
       autoSend: false,
+      autoDownload: false,
       notifications: true,
       serverUrl: "localhost:34567",
     };
 
     autoSendToggle.checked = settings.autoSend || false;
+    autoDownloadToggle.checked = settings.autoDownload || false;
     notificationsToggle.checked = settings.notifications !== false;
     serverUrlInput.value = settings.serverUrl || "127.0.0.1:34567";
     appUrl = serverUrlInput.value;
@@ -252,6 +255,7 @@ async function sendToApp(url) {
     const result = await browserAPI.runtime.sendMessage({
       action: "SEND_TO_APP",
       data: stream,
+      autoDownload: settings.autoDownload,
     });
 
     if (result.success) {
@@ -295,6 +299,7 @@ async function sendAllStreams() {
       const result = await browserAPI.runtime.sendMessage({
         action: "SEND_TO_APP",
         data: stream,
+        autoDownload: settings.autoDownload,
       });
       if (result.success) successCount++;
       else failCount++;
@@ -380,6 +385,12 @@ function setupEventListeners() {
   // Auto-send toggle
   autoSendToggle.addEventListener("change", async () => {
     settings.autoSend = autoSendToggle.checked;
+    await saveSettings();
+  });
+
+  // Auto-download toggle
+  autoDownloadToggle.addEventListener("change", async () => {
+    settings.autoDownload = autoDownloadToggle.checked;
     await saveSettings();
   });
 

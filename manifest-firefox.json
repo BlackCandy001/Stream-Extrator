@@ -3,7 +3,7 @@
   "name": "Stream Downloader Companion",
   "version": "1.0.0",
   "description": "Thu thập và gửi URL m3u8/mpd đến Stream Downloader desktop app",
-  "author": "Stream Downloader Team",
+  "author": "Black Candy",
   "homepage_url": "https://github.com/nilaoda/N_m3u8DL-RE",
   "icons": {
     "16": "icons/icon-16.png",

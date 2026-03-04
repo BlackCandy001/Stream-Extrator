@@ -79,7 +79,7 @@ browserAPI.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "SEND_TO_APP") {
-    sendToApp(message.data)
+    sendToApp(message.data, message.autoDownload)
       .then(() => sendResponse({ success: true }))
       .catch(() =>
         sendResponse({ success: false, error: "Không thể kết nối app" }),
@@ -191,7 +191,7 @@ async function handleStreamDetected(data, sender) {
   // Auto-send nếu được bật VÀ app đang connected
   if (settings.settings?.autoSend && appConnected) {
     console.log("[Stream Downloader] Auto-sending stream to app...");
-    await sendToApp(data);
+    await sendToApp(data, settings.settings?.autoDownload);
   } else if (settings.settings?.autoSend && !appConnected) {
     console.log(
       "[Stream Downloader] Auto-send enabled but app not connected. Stream saved for later.",
@@ -207,7 +207,7 @@ async function handleStreamDetected(data, sender) {
 }
 
 // Gửi URL đến app
-async function sendToApp(data) {
+async function sendToApp(data, autoDownload = false) {
   const url = `http://${appUrl}/api/stream`;
   console.log("[Stream Downloader] Sending to app:", url);
   console.log("[Stream Downloader] Current appUrl:", appUrl);
@@ -226,6 +226,7 @@ async function sendToApp(data) {
           source: data.pageUrl,
           timestamp: Date.now(),
         },
+        autoDownload: autoDownload,
       }),
       signal: AbortSignal.timeout(5000),
     });
