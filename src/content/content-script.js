@@ -130,12 +130,7 @@ function extractAndSendNestedUrls(text, source) {
 function injectNetworkObserver() {
   const script = document.createElement("script");
 
-  // Firefox uses extension URL differently
-  if (typeof browser !== "undefined") {
-    script.src = browserAPI.extension.getURL("src/content/injected.js");
-  } else {
-    script.src = browserAPI.runtime.getURL("src/content/injected.js");
-  }
+  script.src = browserAPI.runtime.getURL("src/content/injected.js");
 
   script.onload = function () {
     this.remove();
@@ -383,7 +378,6 @@ function detectFromDOM() {
 // Khởi chạy detection
 function runDetection() {
   injectNetworkObserver();
-  detectFromJavaScript();
 
   // Run initial detection
   detectVideoElements();
@@ -393,22 +387,36 @@ function runDetection() {
   const continuousDetection = debounce(() => {
     detectVideoElements();
     detectFromDOM();
-  }, 500);
+  }, 1500);
 
   // Setup MutationObserver for real-time DOM changes
   const observer = new MutationObserver((mutations) => {
     let shouldCheck = false;
     for (const mutation of mutations) {
       if (mutation.type === "childList" && mutation.addedNodes.length > 0) {
-        shouldCheck = true;
-        break;
+        // Only trigger if added node is or contains relevant tags
+        for (let i = 0; i < mutation.addedNodes.length; i++) {
+          const node = mutation.addedNodes[i];
+          if (node.nodeType === 1) { // ELEMENT_NODE
+            const tag = node.tagName;
+            if (tag === 'VIDEO' || tag === 'IFRAME' || tag === 'SCRIPT' || tag === 'LINK' || tag === 'SOURCE' || tag === 'INPUT') {
+              shouldCheck = true; break;
+            }
+            if (node.querySelector && node.querySelector('video, iframe, script, link, source, input')) {
+              shouldCheck = true; break;
+            }
+          }
+        }
       }
+      if (shouldCheck) break;
+      
       if (mutation.type === "attributes") {
         const target = mutation.target;
         if (
           target.tagName === "VIDEO" ||
           target.tagName === "SOURCE" ||
-          target.tagName === "SCRIPT"
+          target.tagName === "SCRIPT" ||
+          target.tagName === "IFRAME"
         ) {
           shouldCheck = true;
           break;
@@ -425,10 +433,10 @@ function runDetection() {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ["src", "data-src"],
+    attributeFilter: ["src", "data-src", "href"],
   });
 
-  // Keep a fallback periodic check
+  // Keep a fallback periodic check (less frequent, handle SPA)
   let lastUrl = window.location.href;
   setInterval(() => {
     // Detect URL changes (fallback for SPAs)
@@ -438,10 +446,7 @@ function runDetection() {
       detectedUrls.clear();
       continuousDetection();
     }
-    
-    detectVideoElements();
-    detectFromDOM();
-  }, 3000);
+  }, 5000);
 }
 
 // Start khi DOM ready

@@ -6,10 +6,20 @@
 // Polyfill cho chrome/browser API
 const browserAPI = typeof browser !== "undefined" ? browser : chrome;
 
-// Lưu trữ URLs đã detect
-let detectedStreams = [];
-let appConnected = false;
-let appUrl = "127.0.0.1:34567"; // Default URL (Electron app local server)
+// Lưu trữ URLs đã detect - Đổi sang dùng storage trực tiếp cho MV3
+// Thay vì dùng biến global, ta sẽ dùng helper functions để lấy từ storage
+const DEFAULT_APP_URL = "127.0.0.1:34567";
+
+// Helper để lấy state
+async function getState() {
+  const result = await browserAPI.storage.local.get(["streams", "appConnected", "settings"]);
+  return {
+    streams: result.streams || [],
+    appConnected: result.appConnected || false,
+    appUrl: (result.settings && result.settings.serverUrl) ? result.settings.serverUrl : DEFAULT_APP_URL,
+    settings: result.settings || {}
+  };
+}
 
 // Initialize
 browserAPI.runtime.onInstalled.addListener(() => {
@@ -40,73 +50,60 @@ browserAPI.runtime.onInstalled.addListener(() => {
   }
 });
 
-// Load settings (including server URL)
-browserAPI.storage.local
-  .get(["settings"])
-  .then((result) => {
-    if (result.settings && result.settings.serverUrl) {
-      appUrl = result.settings.serverUrl;
-    }
-    console.log("[Stream Downloader] App URL:", appUrl);
-  })
-  .catch((err) => console.error("Error loading settings:", err));
-
-// Load streams từ storage
-browserAPI.storage.local
-  .get(["streams"])
-  .then((result) => {
-    if (result.streams) {
-      detectedStreams = result.streams;
-    }
-  })
-  .catch((err) => console.error("Error loading streams:", err));
+// Settings & streams loaded individually via async getState()
 
 // Listen messages từ content script
 browserAPI.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "STREAM_DETECTED") {
-    handleStreamDetected(message.data, sender);
-    sendResponse({ success: true });
+    handleStreamDetected(message.data, sender).then(() => {
+      sendResponse({ success: true });
+    });
   }
 
   if (message.action === "GET_STREAMS") {
-    sendResponse({ streams: detectedStreams });
+    getState().then((state) => {
+      sendResponse({ streams: state.streams });
+    });
   }
 
   if (message.action === "CLEAR_STREAMS") {
-    detectedStreams = [];
-    browserAPI.storage.local.set({ streams: [] });
-    sendResponse({ success: true });
+    browserAPI.storage.local.set({ streams: [] }).then(() => {
+      sendResponse({ success: true });
+    });
   }
 
   if (message.action === "SEND_TO_APP") {
     sendToApp(message.data, message.autoDownload)
       .then(() => sendResponse({ success: true }))
-      .catch(() =>
-        sendResponse({ success: false, error: "Không thể kết nối app" }),
+      .catch((e) =>
+        sendResponse({ success: false, error: e.message || "Không thể kết nối app" })
       );
   }
 
   if (message.action === "CHECK_APP_CONNECTION") {
-    // Update appUrl if provided from sidebar
+    let updateUrlPromise = Promise.resolve();
     if (message.url) {
-      appUrl = message.url;
+      updateUrlPromise = browserAPI.storage.local.get(["settings"]).then(res => {
+        const settings = res.settings || {};
+        settings.serverUrl = message.url;
+        return browserAPI.storage.local.set({ settings });
+      });
     }
-    checkAppConnection().then((connected) => {
-      appConnected = connected;
-      browserAPI.storage.local.set({ appConnected: connected });
-      sendResponse({ connected, url: appUrl });
+    
+    updateUrlPromise.then(() => checkAppConnection()).then((result) => {
+      sendResponse({ connected: result.connected, url: result.url });
     });
   }
 
   // Update server URL
   if (message.action === "UPDATE_SERVER_URL") {
-    appUrl = message.url;
     browserAPI.storage.local.get(["settings"]).then((result) => {
       const settings = result.settings || {};
-      settings.serverUrl = appUrl;
-      browserAPI.storage.local.set({ settings });
+      settings.serverUrl = message.url;
+      browserAPI.storage.local.set({ settings }).then(() => {
+        sendResponse({ success: true, url: message.url });
+      });
     });
-    sendResponse({ success: true, url: appUrl });
   }
 
   return true;
@@ -119,6 +116,9 @@ async function handleStreamDetected(data, sender) {
     type: data.type,
     source: data.source,
   });
+
+  const state = await getState();
+  let detectedStreams = state.streams;
 
   // Check duplicate (including YouTube video ID deduplication)
   const exists = detectedStreams.some((s) => {
@@ -147,9 +147,9 @@ async function handleStreamDetected(data, sender) {
   const streamData = {
     id: Date.now() + Math.random().toString(36).substr(2, 9),
     ...data,
-    tabId: sender.tab?.id,
-    tabTitle: sender.tab?.title,
-    tabUrl: sender.tab?.url,
+    tabId: sender?.tab?.id,
+    tabTitle: sender?.tab?.title,
+    tabUrl: sender?.tab?.url,
   };
 
   detectedStreams.unshift(streamData);
@@ -177,8 +177,8 @@ async function handleStreamDetected(data, sender) {
   }
 
   // Send notification
-  const settings = await browserAPI.storage.local.get(["settings"]);
-  if (settings.settings?.notifications) {
+  const settings = state.settings;
+  if (settings?.notifications) {
     browserAPI.notifications.create({
       type: "basic",
       iconUrl: "icons/icon-48.png",
@@ -189,10 +189,10 @@ async function handleStreamDetected(data, sender) {
   }
 
   // Auto-send nếu được bật VÀ app đang connected
-  if (settings.settings?.autoSend && appConnected) {
+  if (settings?.autoSend && state.appConnected) {
     console.log("[Stream Downloader] Auto-sending stream to app...");
-    await sendToApp(data, settings.settings?.autoDownload);
-  } else if (settings.settings?.autoSend && !appConnected) {
+    await sendToApp(data, settings?.autoDownload);
+  } else if (settings?.autoSend && !state.appConnected) {
     console.log(
       "[Stream Downloader] Auto-send enabled but app not connected. Stream saved for later.",
     );
@@ -208,9 +208,10 @@ async function handleStreamDetected(data, sender) {
 
 // Gửi URL đến app
 async function sendToApp(data, autoDownload = false) {
-  const url = `http://${appUrl}/api/stream`;
+  const state = await getState();
+  const url = `http://${state.appUrl}/api/stream`;
   console.log("[Stream Downloader] Sending to app:", url);
-  console.log("[Stream Downloader] Current appUrl:", appUrl);
+  console.log("[Stream Downloader] Current appUrl:", state.appUrl);
   console.log("[Stream Downloader] Stream URL:", data.url.substring(0, 80));
 
   try {
@@ -266,7 +267,8 @@ async function sendToApp(data, autoDownload = false) {
 
 // Kiểm tra kết nối app
 async function checkAppConnection() {
-  const url = `http://${appUrl}/api/health`;
+  const state = await getState();
+  const url = `http://${state.appUrl}/api/health`;
   console.log("[Stream Downloader] Checking app connection:", url);
   try {
     const response = await fetch(url, {
@@ -274,7 +276,7 @@ async function checkAppConnection() {
       signal: AbortSignal.timeout(5000), // Increased timeout
     });
     const connected = response.ok;
-    appConnected = connected;
+    await browserAPI.storage.local.set({ appConnected: connected });
     console.log(
       "[Stream Downloader] App connection:",
       connected ? "Connected ✅" : "Disconnected ❌",
@@ -285,15 +287,15 @@ async function checkAppConnection() {
       await browserAPI.runtime.sendMessage({
         action: "CONNECTION_CHANGED",
         connected: connected,
-        url: appUrl,
+        url: state.appUrl,
       });
     } catch (e) {
       // Sidebar might not be open
     }
 
-    return connected;
+    return { connected, url: state.appUrl };
   } catch (error) {
-    appConnected = false;
+    await browserAPI.storage.local.set({ appConnected: false });
     console.log("[Stream Downloader] App not reachable:", error.message);
 
     // Broadcast disconnection
@@ -304,13 +306,14 @@ async function checkAppConnection() {
       });
     } catch (e) {}
 
-    return false;
+    return { connected: false, url: state.appUrl };
   }
 }
 
 // Update badge
-function updateBadge() {
-  const count = detectedStreams.length;
+async function updateBadge() {
+  const state = await getState();
+  const count = state.streams.length;
   // Handle both Manifest V2 (browserAction) and V3 (action)
   const actionApi = browserAPI.action || browserAPI.browserAction;
   if (!actionApi) return;
@@ -343,14 +346,12 @@ browserAPI.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 });
 
-// Alarm để check connection (every 10 seconds for more responsive status)
-browserAPI.alarms.create("checkApp", { periodInMinutes: 0.166 }); // ~10 seconds
+// Alarm để check connection (every 1 min, MV3 requirement minimum)
+browserAPI.alarms.create("checkApp", { periodInMinutes: 1 });
 browserAPI.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === "checkApp") {
-    const connected = await checkAppConnection();
-    appConnected = connected;
-    await browserAPI.storage.local.set({ appConnected: connected });
-    updateBadge();
+    await checkAppConnection();
+    await updateBadge();
   }
 });
 
